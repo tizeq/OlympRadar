@@ -22,10 +22,26 @@ export function safeUrl(value) {
     return null;
   }
 }
+export const visibleEvents = `e.status = 'active' AND (
+  e.category IS NULL OR e.category <> 'olympiad'
+  OR EXISTS (
+    SELECT 1 FROM json_each(e.tags_json)
+    WHERE value IN ('ai', 'ml', 'programming', 'informatics', 'cybersecurity', 'robotics')
+  )
+  OR e.id IN (
+    SELECT id FROM events_fts
+    WHERE events_fts MATCH 'title : (
+      информатик* OR программирован* OR кибербезопасност* OR робототехник*
+      OR информационн* + безопасност* OR информационн* + технологи*
+      OR "computer science" OR "information security" OR "information technology"
+      OR cybersecurity OR robotics OR informatics OR programming
+    )'
+  )
+)`;
 export function buildEventQuery(input = {}, userId = "") {
   const p =
     input instanceof URLSearchParams ? Object.fromEntries(input) : input;
-  const where = ["e.status = 'active'"];
+  const where = [visibleEvents];
   const args = [];
   const add = (sql, value) => {
     where.push(sql);

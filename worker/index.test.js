@@ -239,3 +239,26 @@ test("website and Mini App API retired; webhook authenticates callbacks before t
     assert.equal((await worker.fetch(new Request("https://local"+path),env)).status,404);
   assert.equal((await worker.fetch(new Request("https://local/telegram",{method:"POST",body:"{}"}),env)).status,401);
 });
+
+test("only olympiads with IT subjects appear in the catalog and search", async () => {
+  const { db, ...catalog } = localDB();
+  try {
+    const insert = db.prepare(
+      "INSERT INTO events(id,title,status,category,tags_json) VALUES(?,?,'active',?,?)",
+    );
+    insert.run("literature", "Олимпиада по литературе", "olympiad", '["olympiad"]');
+    insert.run("math", "Интернет-олимпиада по математике", "olympiad", '["olympiad","web"]');
+    insert.run("informatics", "Олимпиада по информатике", "olympiad", '["olympiad"]');
+    insert.run("security", "Олимпиада по информационной безопасности", "olympiad", '["olympiad"]');
+    insert.run("ai", "Олимпиада по нейросетям", "olympiad", '["olympiad","ai"]');
+    insert.run("ctf", "CTF", "ctf", "[]");
+    insert.run("other", "Открытый конкурс", null, "[]");
+    const listing = await queryEvents(catalog, { category: "olympiad" });
+    assert.deepEqual(listing.items.map(({ id }) => id), ["ai", "informatics", "security"]);
+    assert.equal((await queryEvents(catalog, {})).total, 5);
+    assert.equal((await queryEvents(catalog, { q: "литературе" })).total, 0);
+    assert.equal((await queryEvents(catalog, { q: "олимпиады по ИИ" })).total, 1);
+  } finally {
+    db.close();
+  }
+});

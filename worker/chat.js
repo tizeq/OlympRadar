@@ -1,4 +1,4 @@
-import { queryEvents, safeUrl } from "./index.js";
+import { queryEvents, safeUrl, visibleEvents } from "./index.js";
 
 const sections = {
   olympiad: "🏆 Олимпиады",
@@ -339,7 +339,7 @@ async function screen(db, uid, state, settings, action, text) {
     }
     if (op === "event" && arg) {
       const e = await db
-        .prepare("SELECT * FROM events WHERE id=? AND status='active'")
+        .prepare(`SELECT e.* FROM events e WHERE e.id=? AND ${visibleEvents}`)
         .bind(arg)
         .first();
       return e

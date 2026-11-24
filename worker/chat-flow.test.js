@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import worker, { syncCatalog } from "./index.js";
+import worker, { queryEvents, syncCatalog } from "./index.js";
 
 function database(t) {
   const sqlite = new DatabaseSync(":memory:");
@@ -141,11 +141,7 @@ async function checkFlow(t, catalog) {
     if (!next) break;
     page = await step(next, true);
   }
-  const available = DB.sqlite
-    .prepare(
-      "SELECT count(*) n FROM events WHERE category='olympiad' AND status='active'",
-    )
-    .get().n;
+  const { total: available } = await queryEvents(DB, { category: "olympiad" });
   assert.equal(visited.size, Math.min(available, 45));
   const empty = await step("daily", true);
   assert.match(empty.text, /хотя бы один фильтр/);
