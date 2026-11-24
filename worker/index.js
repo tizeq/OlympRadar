@@ -1,14 +1,7 @@
+import { handleUpdate } from "./chat.js";
 import { sendDueDigests } from "./notifications.js";
 export const CATALOG_URL =
   "https://raw.githubusercontent.com/tizeq/OlympRadar/catalog-data/catalog.json";
-const defaults = {
-  enabled: false,
-  time: "09:00",
-  timezone: "Europe/Moscow",
-  min_score: 0,
-  filter_ids: [],
-  urgent: false,
-};
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -29,47 +22,6 @@ export function safeUrl(value) {
     return null;
   }
 }
-const enc = new TextEncoder();
-async function hmac(key, value) {
-  const k = await crypto.subtle.importKey(
-    "raw",
-    typeof key === "string" ? enc.encode(key) : key,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(value)));
-}
-export async function authenticate(raw, token, now = Date.now()) {
-  if (!raw || raw.length > 8192 || !token) throw new Error("Unauthorized");
-  const p = new URLSearchParams(raw);
-  if ([...p.keys()].some((k, i, a) => a.indexOf(k) !== i))
-    throw new Error("Unauthorized");
-  const hash = p.get("hash");
-  p.delete("hash");
-  const date = Number(p.get("auth_date"));
-  if (
-    !hash ||
-    !/^[a-f0-9]{64}$/i.test(hash) ||
-    !date ||
-    now / 1000 - date > 86400 ||
-    date - now / 1000 > 60
-  )
-    throw new Error("Unauthorized");
-  const check = [...p.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
-  const expected = await hmac(await hmac("WebAppData", token), check);
-  let mismatch = 0;
-  for (let i = 0; i < 32; i++)
-    mismatch |= expected[i] ^ parseInt(hash.slice(i * 2, i * 2 + 2), 16);
-  if (mismatch) throw new Error("Unauthorized");
-  const user = JSON.parse(p.get("user") || "null");
-  if (!Number.isSafeInteger(user?.id) || user.id <= 0)
-    throw new Error("Unauthorized");
-  return String(user.id);
-}
 export function buildEventQuery(input = {}, userId = "") {
   const p =
     input instanceof URLSearchParams ? Object.fromEntries(input) : input;
@@ -79,11 +31,21 @@ export function buildEventQuery(input = {}, userId = "") {
     where.push(sql);
     args.push(value);
   };
+  if (p.category === "ai") return buildEventQuery({...p, category: "", tag: "ai"}, userId);
   if (p.q) {
-    const tokens =
-      String(p.q)
-        .slice(0, 200)
-        .match(/[\p{L}\p{N}_]+/gu) || [];
+    const query = String(p.q).slice(0, 200).toLowerCase()
+      .replace(/искусственн[а-яё]*\s+интеллект[а-яё]*|artificial\s+intelligence/gu, "ai");
+    const tokens = [];
+    const types = {олимпиада:"olympiad",олимпиады:"olympiad",хакатон:"hackathon",хакатоны:"hackathon",грант:"grant",гранты:"grant"};
+    for (const token of query.match(/[\p{L}\p{N}_]+/gu) || []) {
+      if (["ии", "ai"].includes(token)) {
+        where.push("EXISTS (SELECT 1 FROM json_each(e.tags_json) WHERE value='ai')");
+      } else if (Object.hasOwn(types, token)) {
+        add("e.category = ?", types[token]);
+      } else if (!["по", "на", "и", "мероприятия", "мероприятие", "соревнования", "соревнование"].includes(token)) {
+        tokens.push(token);
+      }
+    }
     if (tokens.length)
       add(
         "e.id IN (SELECT id FROM events_fts WHERE events_fts MATCH ?)",
@@ -114,21 +76,14 @@ export function buildEventQuery(input = {}, userId = "") {
   if (p.sort === "prize" && !p.currency) p.currency = "RUB";
   if (p.currency)
     add("e.prize_currency = ?", String(p.currency).slice(0, 10).toUpperCase());
-  if (p.start_from)
-    add(
-      "julianday(e.start) >= julianday(?)",
-      String(p.start_from).slice(0, 40),
-    );
-  if (p.deadline_from)
-    add(
-      "julianday(e.deadline) >= julianday(?)",
-      String(p.deadline_from).slice(0, 40),
-    );
-  if (p.deadline_to)
-    add(
-      "julianday(e.deadline) <= julianday(?)",
-      String(p.deadline_to).slice(0, 40),
-    );
+  for (const field of ["start", "end", "registration_start", "registration_end", "deadline"]) {
+    const lower = p[field + "_from"], upper = p[field + "_to"];
+    if (lower) add(`julianday(e.${field}) >= julianday(?)`, String(lower));
+    if (upper) {
+      const dayOnly = /^\d{4}-\d{2}-\d{2}$/.test(upper);
+      add(dayOnly ? `julianday(e.${field}) < julianday(?, '+1 day')` : `julianday(e.${field}) <= julianday(?)`, String(upper));
+    }
+  }
   if (p.age !== undefined && Number.isFinite(Number(p.age))) {
     add("(e.age_min IS NULL OR e.age_min <= ?)", Number(p.age));
     add("(e.age_max IS NULL OR e.age_max >= ?)", Number(p.age));
@@ -180,162 +135,6 @@ async function readBody(req) {
   if (raw.length > 16384) throw new Error("Body too large");
   return JSON.parse(raw);
 }
-function validateSettings(s) {
-  if (!s || typeof s !== "object" || Array.isArray(s))
-    throw new Error("Invalid settings");
-  const out = { ...defaults, ...s };
-  if (
-    typeof out.enabled !== "boolean" ||
-    typeof out.urgent !== "boolean" ||
-    !/^([01]\d|2[0-3]):[0-5]\d$/.test(out.time) ||
-    !Number.isFinite(out.min_score) ||
-    out.min_score < 0 ||
-    out.min_score > 100 ||
-    !Array.isArray(out.filter_ids) ||
-    out.filter_ids.length > 20 ||
-    !out.filter_ids.every((x) => typeof x === "string")
-  )
-    throw new Error("Invalid settings");
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: out.timezone });
-  } catch {
-    throw new Error("Invalid timezone");
-  }
-  return Object.fromEntries(Object.keys(defaults).map((k) => [k, out[k]]));
-}
-async function api(req, env, path) {
-  let uid;
-  try {
-    uid = await authenticate(
-      req.headers.get("X-Telegram-Init-Data"),
-      env.TELEGRAM_BOT_TOKEN,
-    );
-  } catch {
-    return json({ error: "Unauthorized" }, 401);
-  }
-  const minute = Math.floor(Date.now() / 60000);
-  const quota = await env.DB.prepare(
-    "INSERT INTO request_limits(user_id,bucket,n) VALUES(?,?,1) ON CONFLICT(user_id) DO UPDATE SET bucket=excluded.bucket,n=CASE WHEN request_limits.bucket=excluded.bucket THEN request_limits.n+1 ELSE 1 END RETURNING n",
-  )
-    .bind(uid, minute)
-    .first();
-  if (quota.n > 120) return json({ error: "Rate limit" }, 429);
-  const now = new Date().toISOString();
-  await env.DB.prepare(
-    "INSERT OR IGNORE INTO users(telegram_id,created_at,updated_at) VALUES(?,?,?)",
-  )
-    .bind(uid, now, now)
-    .run();
-  const method = req.method;
-  if (path === "/api/events" && method === "GET")
-    return json(await queryEvents(env.DB, new URL(req.url).searchParams, uid));
-  if (path === "/api/me" && method === "GET") {
-    const [u, f, s] = await Promise.all([
-      env.DB.prepare("SELECT settings_json FROM users WHERE telegram_id=?")
-        .bind(uid)
-        .first(),
-      env.DB.prepare("SELECT event_id FROM favorites WHERE user_id=?")
-        .bind(uid)
-        .all(),
-      env.DB.prepare(
-        "SELECT id,name,query_json FROM saved_filters WHERE user_id=?",
-      )
-        .bind(uid)
-        .all(),
-    ]);
-    return json({
-      favorites: f.results.map((x) => x.event_id),
-      filters: s.results.map((x) => ({
-        id: x.id,
-        name: x.name,
-        query: JSON.parse(x.query_json),
-      })),
-      settings: { ...defaults, ...JSON.parse(u.settings_json) },
-    });
-  }
-  const favorite = path.match(/^\/api\/favorites\/([^/]+)$/);
-  if (favorite && ["PUT", "DELETE"].includes(method)) {
-    const id = decodeURIComponent(favorite[1]);
-    if (id.length > 200) return json({ error: "Invalid id" }, 400);
-    if (method === "PUT") {
-      const event = await env.DB.prepare("SELECT id FROM events WHERE id=?")
-        .bind(id)
-        .first();
-      if (!event) return json({ error: "Not found" }, 404);
-      const n = await env.DB.prepare(
-        "SELECT count(*) n FROM favorites WHERE user_id=?",
-      )
-        .bind(uid)
-        .first();
-      if (n.n >= 1000) return json({ error: "Favorite limit" }, 409);
-      await env.DB.prepare(
-        "INSERT OR IGNORE INTO favorites(user_id,event_id) VALUES(?,?)",
-      )
-        .bind(uid, id)
-        .run();
-    } else
-      await env.DB.prepare(
-        "DELETE FROM favorites WHERE user_id=? AND event_id=?",
-      )
-        .bind(uid, id)
-        .run();
-    return json({ ok: true });
-  }
-  if (path === "/api/filters" && method === "POST") {
-    const b = await readBody(req);
-    if (
-      typeof b.name !== "string" ||
-      !b.name.trim() ||
-      b.name.length > 100 ||
-      !b.query ||
-      typeof b.query !== "object" ||
-      Array.isArray(b.query)
-    )
-      return json({ error: "Invalid filter" }, 400);
-    const n = await env.DB.prepare(
-      "SELECT count(*) n FROM saved_filters WHERE user_id=?",
-    )
-      .bind(uid)
-      .first();
-    if (n.n >= 20) return json({ error: "Filter limit" }, 409);
-    const id = crypto.randomUUID();
-    await env.DB.prepare(
-      "INSERT INTO saved_filters(id,user_id,name,query_json) VALUES(?,?,?,?)",
-    )
-      .bind(id, uid, b.name.trim(), JSON.stringify(b.query))
-      .run();
-    return json({ id, name: b.name.trim(), query: b.query }, 201);
-  }
-  const filter = path.match(/^\/api\/filters\/([^/]+)$/);
-  if (filter && method === "DELETE") {
-    await env.DB.prepare("DELETE FROM saved_filters WHERE user_id=? AND id=?")
-      .bind(uid, decodeURIComponent(filter[1]))
-      .run();
-    return json({ ok: true });
-  }
-  if (path === "/api/settings" && method === "PUT") {
-    const b = await readBody(req);
-    const settings = validateSettings(b.settings || b);
-    if (settings.filter_ids.length) {
-      const rows = await env.DB.prepare(
-        "SELECT id FROM saved_filters WHERE user_id=?",
-      )
-        .bind(uid)
-        .all();
-      if (
-        settings.filter_ids.some((id) => !rows.results.some((x) => x.id === id))
-      )
-        return json({ error: "Unknown filter" }, 400);
-    }
-    await env.DB.prepare(
-      "UPDATE users SET settings_json=?,updated_at=? WHERE telegram_id=?",
-    )
-      .bind(JSON.stringify(settings), now, uid)
-      .run();
-    return json({ settings });
-  }
-  return json({ error: "Not found" }, 404);
-}
 const fields = [
   "id",
   "title",
@@ -345,6 +144,9 @@ const fields = [
   "category",
   "tags_json",
   "start",
+  "end",
+  "registration_start",
+  "registration_end",
   "deadline",
   "prize",
   "format",
@@ -437,7 +239,7 @@ export async function syncCatalog(env, readSnapshot = fetch) {
             .map((x) => x.slice(0, 100))
         : [],
     );
-    item.status = e.status === "ended" ? "ended" : "active";
+    item.status = ["ended", "withdrawn"].includes(e.status) ? e.status : "active";
     item.free = typeof e.free === "boolean" ? Number(e.free) : null;
     item.registration_open =
       typeof e.registration_open === "boolean"
@@ -525,52 +327,16 @@ async function webhook(req, env) {
   await env.DB.prepare("DELETE FROM webhook_updates WHERE created_at < ?")
     .bind(Date.now() - 7 * 86400000)
     .run();
-  const m = update.message;
-  if (
-    m?.chat?.type === "private" &&
-    m?.from?.id === m?.chat?.id &&
-    /^\/start(?:@\w+)?(?:\s|$)/.test(m.text || "")
-  ) {
-    const url = safeUrl(env.APP_URL);
-    if (!url || !url.startsWith("https:")) return json({ ok: true });
-    await fetch(
-      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        redirect: "error",
-        signal: AbortSignal.timeout(15000),
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: m.chat.id,
-          text: "OlympRadar — персональный каталог соревнований. Откройте приложение и включите ежедневную сводку в настройках.",
-          reply_markup: {
-            inline_keyboard: [
-              ...[
-                ["Каталог", "catalog"],
-                ["Поиск", "search"],
-                ["Для вас", "recommendations"],
-                ["Избранное", "favorites"],
-                ["Настройки", "settings"],
-              ].map(([text, view]) => {
-                const target = new URL(url);
-                target.searchParams.set("view", view);
-                return [{ text, web_app: { url: target.href } }];
-              }),
-            ],
-          },
-        }),
-      },
-    );
-  }
+  await handleUpdate(update, env);
   return json({ ok: true });
 }
 export default {
   async fetch(req, env) {
     const path = new URL(req.url).pathname;
     try {
-      if (path.startsWith("/api/")) return await api(req, env, path);
+
       if (path === "/telegram") return await webhook(req, env);
-      return env.ASSETS.fetch(req);
+      return json({ error: "Not found" }, 404);
     } catch (e) {
       console.error("Request failed", e?.name);
       return json({ error: "Invalid request" }, 400);

@@ -24,24 +24,21 @@ def main():
     if url.scheme != 'https' or not url.hostname or url.netloc != url.hostname or url.path not in ('', '/'):
         parser.error('Expected bare HTTPS origin')
     origin = f'https://{url.hostname}'
-    html = subprocess.check_output(['curl', '-fsS', '--max-time', '25', origin + '/'])
-    if b'<title>OlympRadar' not in html:
-        parser.error('Mini App unavailable at this origin')
     load_env(ROOT / '.env')
     token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     if not re.fullmatch(r'\d+:[\w-]+', token):
         parser.error('Missing bot token')
     secret = secrets.token_urlsafe(36)
     subprocess.run(['npx', '--no-install', 'wrangler', 'secret', 'bulk', '--config', args.config],
-                   input=json.dumps({'TELEGRAM_BOT_TOKEN': token, 'WEBHOOK_SECRET': secret,
-                                     'APP_URL': origin}), cwd=ROOT/'worker', text=True, check=True)
+                   input=json.dumps({'TELEGRAM_BOT_TOKEN': token, 'WEBHOOK_SECRET': secret}), cwd=ROOT/'worker', text=True, check=True)
     endpoint = origin + '/telegram'
-    telegram('setWebhook', {'url': endpoint, 'secret_token': secret, 'allowed_updates': ['message']})
-    telegram('setChatMenuButton', {'menu_button': {'type': 'web_app', 'text': 'Каталог', 'web_app': {'url': origin}}})
+    telegram('setWebhook', {'url': endpoint, 'secret_token': secret, 'max_connections': 1, 'allowed_updates': ['message', 'callback_query']})
+    telegram('setMyCommands', {'commands': [{'command': 'start', 'description': 'Главное меню'}, {'command': 'search', 'description': 'Поиск мероприятий'}]})
+    telegram('setChatMenuButton', {'menu_button': {'type': 'commands'}})
     state = telegram('getWebhookInfo', {})
-    if state.get('url') != endpoint:
+    if state.get('url') != endpoint or 'callback_query' not in state.get('allowed_updates', []):
         raise SystemExit('Webhook verification failed')
-    print('Webhook and Mini App menu configured.')
+    print('Webhook and Telegram command menu configured.')
 
 
 if __name__ == '__main__':

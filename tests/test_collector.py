@@ -87,13 +87,75 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(items[0]['deadline'], self.event['deadline'])
 
     def test_registration_deadline_is_not_completion(self):
-        self.run_catalog([dict(self.event, prize='$500')])
+        self.run_catalog([dict(self.event, prize='US$500', registration_end='2026-02-01')])
         self.now = dt.datetime(2026, 2, 2, tzinfo=dt.timezone.utc)
         item = self.run_catalog([])[0]
         self.assertEqual(item['status'], 'active')
         self.assertFalse(item['registration_open'])
         self.assertEqual(item['prize_amount'], 500)
         self.assertEqual(item['prize_currency'], 'USD')
+
+    def test_reschedule_back_to_previous_date_uses_cached_analysis(self):
+        analyze = Mock(return_value={'score': 75})
+        first = dict(self.event, start='2026-02-01', end='2026-02-03')
+        second = dict(first, start='2026-03-01', end='2026-03-03')
+        self.run_catalog([first], analyzer=analyze)
+        self.run_catalog([second], analyzer=analyze)
+        final = self.run_catalog([first], analyzer=analyze)[0]
+        self.assertEqual(final['start'], first['start'])
+        self.assertEqual(final['end'], first['end'])
+        self.assertEqual(analyze.call_count, 2)
+
+    def test_ai_is_a_topic_not_event_format(self):
+        for title, kind in [('Web CTF по искусственному интеллекту', 'ctf'),
+                            ('Хакатон по машинному обучению', 'hackathon'),
+                            ('Олимпиада по нейронным сетям', 'olympiad'),
+                            ('Grant for artificial intelligence research', 'grant')]:
+            with self.subTest(title=title):
+                data = collector._metadata({'title': title}, {})
+                self.assertEqual(data['category'], kind)
+                self.assertIn('ai', data['tags'])
+        self.assertNotIn('ai', collector._metadata({'title':'Искусственное освещение'}, {})['tags'])
+        self.assertNotIn('ai', collector._metadata({'title':'Hackathon', 'description':'AI assistants are allowed.'}, {})['tags'])
+        self.assertIsNone(collector._metadata({'prize':'$500'}, {})['prize_currency'])
+
+    def test_registration_and_other_deadline_are_independent(self):
+        event = dict(self.event, registration_start='2025-12-05',
+                     registration_end='2026-02-02', deadline='2025-12-31',
+                     start='2026-02-03T12:00:00+03:00', end='2026-02-05')
+        result = self.run_catalog([event])[0]
+        self.assertEqual(result['start'], '2026-02-03T09:00:00+00:00')
+        self.assertEqual(result['end'], '2026-02-05')
+        self.assertEqual(result['registration_start'], '2025-12-05')
+        self.assertEqual(result['registration_end'], '2026-02-02')
+        self.assertIsNot(result['registration_open'], False)
+        self.assertEqual(result['deadline'], '2025-12-31')
+        self.assertIsNone(collector._metadata({'start': '2026-02-30'}, {'deadline':'2026-03-01'})['deadline'])
+        self.assertIsNone(collector._date('2026-02-30'))
+
+    def test_registration_window_changes_without_refetch(self):
+        event = dict(self.event, registration_start='2026-01-02', registration_end='2026-01-05')
+        self.assertFalse(self.run_catalog([event])[0]['registration_open'])
+        self.now += dt.timedelta(days=4)
+        self.assertTrue(self.run_catalog([])[0]['registration_open'])
+        self.now += dt.timedelta(days=1)
+        self.assertFalse(self.run_catalog([])[0]['registration_open'])
+
+    def test_old_topic_category_completion_and_false_registration(self):
+        record = self.run_catalog([self.event])[0]
+        record.update(category='web', tags=['web', 'ai'], registration_open=False)
+        record.pop('end')
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('UPDATE events SET normalization_version=1,completion_at=?,data=?',
+                       ('2026-03-01', json.dumps(record)))
+            db.commit()
+        fixed = self.run_catalog([])[0]
+        self.assertEqual(fixed['id'], record['id'])
+        self.assertEqual(fixed['category'], 'ctf')
+        self.assertNotIn('ai', fixed['tags'])
+        self.assertEqual(fixed['end'], '2026-03-01')
+        self.assertIsNone(fixed['registration_end'])
+        self.assertIsNone(fixed['registration_open'])
 
     def test_existing_version_one_migrates_and_reprocessing_is_incremental(self):
         with closing(sqlite3.connect(self.db)) as db:
@@ -105,7 +167,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(self.count('collector_runs'), 2)
         self.assertEqual(self.count('source_runs'), 2)
         with closing(sqlite3.connect(self.db)) as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 3)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 5)
 
     def test_source_callback_records_empty_error_and_partial(self):
         def collect(on_source):

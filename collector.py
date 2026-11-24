@@ -15,11 +15,32 @@ import analysis
 from radar import aliases
 import sources
 
-FIELDS = ('id title url source description category tags start deadline prize format restrictions '
+FIELDS = ('id title url source description category tags start end registration_start registration_end deadline prize format restrictions '
           'ai_policy registration_url country age_min age_max free prize_amount prize_currency '
           'difficulty registration_open score status created_at updated_at').split()
 LOG = logging.getLogger(__name__)
-NORMALIZATION_VERSION = 1
+NORMALIZATION_VERSION = 2
+DATE_FIELDS = ('start', 'end', 'registration_start', 'registration_end', 'deadline')
+EVENT_TYPES = {
+    'ctf': r'(?:\b|[a-z0-9])ctf\b|capture[ -]the[ -]flag',
+    'hackathon': r'\bhackathons?\b|\bхакатон\w*',
+    'olympiad': r'\bolympiads?\b|\bолимпиад\w*',
+    'grant': r'\bgrants?\b|\bгрант(?:ы|а|ов|ом|ам|ами|ах|у)?\b',
+}
+TOPICS = {
+    'web': r'\bweb\b|\bвеб(?:[ -]|\b)',
+    'ai': (r'\b(?:ai|ии|artificial intelligence|genai|llms?|gpt)\b|'
+           r'искусственн\w*\s+интеллект\w*|нейро(?:сет\w*|нн\w*\s+сет\w*)|'
+           r'нейросет\w*|neural networks?|deep learning|языков\w*\s+модел\w*'),
+    'ml': r'\bml\b|machine[ -]learning|машинн\w*\s+обучен\w*|глубок\w*\s+обучен\w*',
+    'ai-security': r'(?:llm|ai)[ -]security|prompt injection|безопасност\w*\s+ии\b',
+    'ai-agents': r'\bai[ -]agents?\b|\bии[ -]агент\w*',
+    'programming': r'\bcoding\b|программирован\w*|алгоритм\w*|\bcodeforces\b',
+}
+# These catalogs publish a single event format. A news site's general subject
+# does not establish the type of each individual announcement.
+SOURCE_TYPES = {'Codeforces': 'programming', 'CTFtime': 'ctf',
+                'Олимпиада.ру': 'olympiad', 'Devpost': 'hackathon'}
 
 
 def encoded(value):
@@ -39,6 +60,10 @@ def connect(path):
         db.executescript((schema.parent / '002_runs.sql').read_text(encoding='utf-8'))
     if version < 3:
         db.executescript((schema.parent / '003_analysis_cache.sql').read_text(encoding='utf-8'))
+    if version < 4:
+        db.executescript((schema.parent / '004_registration.sql').read_text(encoding='utf-8'))
+    if version < 5:
+        db.executescript((schema.parent / '005_withdrawn.sql').read_text(encoding='utf-8'))
     return db
 
 
@@ -46,21 +71,26 @@ def _date(value):
     if not isinstance(value, str):
         return None
     try:
-        dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
-        return value
-    except ValueError:
+        value = value.strip()
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+            return dt.date.fromisoformat(value).isoformat()
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?', value):
+            return None
+        moment = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return moment.astimezone(dt.timezone.utc).isoformat() if moment.tzinfo else moment.isoformat()
+    except (ValueError, OverflowError):
         return None
 
 
 def _metadata(event, result):
     data = {key: event.get(key) for key in FIELDS}
     for key, value in result.items():
-        if key in FIELDS and value not in (None, '', analysis.UNKNOWN):
+        if key in FIELDS and key not in DATE_FIELDS and value not in (None, '', analysis.UNKNOWN):
             data[key] = value
     for key in FIELDS:
         if data[key] == analysis.UNKNOWN:
             data[key] = None
-    for key in ('start', 'deadline'):
+    for key in DATE_FIELDS:
         data[key] = _date(data[key])
     for key in ('free', 'registration_open'):
         data[key] = data[key] if isinstance(data[key], bool) else None
@@ -72,27 +102,75 @@ def _metadata(event, result):
     data['score'] = max(0, min(100, score)) if type(score) in (int, float) else 0
     tags = data['tags'] if isinstance(data['tags'], list) else []
     tags = [x.strip()[:80] for x in tags if isinstance(x, str) and x.strip()]
-    text = ' '.join(str(event.get(k) or '') for k in ('title', 'description')).casefold()
-    patterns = {'web': r'\bweb\b|веб', 'ai': r'\bai\b|\bии\b|искусственн', 'ml': r'\bml\b|machine learning', 'olympiad': r'olympiad|олимпиад', 'grant': r'grant|грант', 'ctf': r'\bctf\b', 'ai-security': r'llm security|ai security|prompt injection|red team',
-                'ai-agents': r'ai agents?|ии.агент', 'hackathon': r'hackathon|хакатон',
-                'programming': r'coding|программ|алгоритм|codeforces'}
-    tags.extend(tag for tag, pattern in patterns.items() if re.search(pattern, text))
+    title = str(event.get('title') or '').casefold()
+    description = str(event.get('description') or '').casefold()
+    text = ' '.join([title, description, *(value.casefold() for value in tags)])
+    # A rule about using assistants does not establish the subject of the contest.
+    topical_text = ' '.join([title, *(value.casefold() for value in tags), *(
+        sentence for sentence in re.split(r'[.!?;\n]+', description)
+        if not re.search(r'\b(?:allowed|prohibited|forbidden|permitted)\b|разрешен|разрешён|запрещен|запрещён',
+                         sentence)
+    )])
+    explicit_type = event.get('category')
+    data['category'] = explicit_type if explicit_type in {*EVENT_TYPES, 'programming'} else None
+    if not data['category']:
+        data['category'] = next((kind for kind, pattern in EVENT_TYPES.items()
+                                 if re.search(pattern, title)), SOURCE_TYPES.get(event.get('source')))
+    if not data['category']:
+        kinds = [kind for kind, pattern in EVENT_TYPES.items() if re.search(pattern, text)]
+        if len(kinds) == 1:
+            data['category'] = kinds[0]
+    if data['category']:
+        tags.append(data['category'])
+    for topic, pattern in TOPICS.items():
+        if re.search(pattern, topical_text):
+            tags.append(topic)
+    if explicit_type in TOPICS:
+        tags.append(explicit_type)
+    if any(tag in {'ml', 'ai-security', 'ai-agents'} for tag in tags):
+        tags.append('ai')
     data['tags'] = sorted(set(tags))
-    if not data['category']:
-        data['category'] = next((tag for tag in patterns if tag in data['tags']), None)
-    if not data['category']:
-        data['category'] = {'Codeforces': 'programming', 'Олимпиада.ру': 'olympiad', 'AIcrowd': 'ml', 'Devpost': 'hackathon', 'CTFtime': 'ctf', 'CTFNews': 'ctf'}.get(event.get('source'))
     if data['prize_amount'] is None and isinstance(data['prize'], str):
-        match = re.fullmatch(r'\s*([$€₽])\s*(\d+(?:[.,]\d{1,2})?)\s*|\s*(\d+(?:[.,]\d{1,2})?)\s*([$€₽])\s*', data['prize'])
+        match = re.fullmatch(
+            r'\s*(USD|US\$|EUR|RUB|[$€₽])\s*(\d+(?:[.,]\d{1,2})?)\s*|'
+            r'\s*(\d+(?:[.,]\d{1,2})?)\s*(USD|US\$|EUR|RUB|[$€₽])\s*', data['prize'], re.I)
         if match:
             symbol, amount = (match[1], match[2]) if match[1] else (match[4], match[3])
             data['prize_amount'] = float(amount.replace(',', '.'))
-            data['prize_currency'] = {'$':'USD', '€':'EUR', '₽':'RUB'}[symbol]
+            data['prize_currency'] = {'US$': 'USD', 'USD': 'USD', '€': 'EUR', 'EUR': 'EUR',
+                                      '₽': 'RUB', 'RUB': 'RUB'}.get(symbol.upper())
     return data
 
 
+def _registration_state(data, hint, now):
+    start, end = data.get('registration_start'), data.get('registration_end')
+    if sources.expired(end, now):
+        return False
+    if start:
+        opening = dt.datetime.fromisoformat(start)
+        if opening.tzinfo:
+            future = now < opening
+        else:
+            future = now.date() < opening.date()
+        if future:
+            return False
+    if hint is not None:
+        return bool(hint)
+    if start and end:
+        # A local time without an offset cannot establish the current instant.
+        for edge in (start, end):
+            moment = dt.datetime.fromisoformat(edge)
+            if moment.tzinfo is None and len(edge) > 10 and moment.date() == now.date():
+                return None
+        return True
+    return None
+
+
 def _ended(data, now):
-    return data.get('status') == 'ended' or sources.expired(data.get('end'), now)
+    if data.get('status') == 'ended' or sources.expired(data.get('end'), now):
+        return True
+    # The NLnet record represents an application round; its proposal cutoff ends that round.
+    return data.get('source') == 'NLnet' and data.get('category') == 'grant' and sources.expired(data.get('deadline'), now)
 
 
 def _save(db, data, input_hash, completion_at=None):
@@ -129,6 +207,8 @@ def _merge(db, identities, stamp):
                 data[key] = other[key]
         data['tags'] = sorted(set(data['tags']) | set(other['tags']))
         completion = completion or other_completion
+        db.execute('UPDATE events SET registration_hint=coalesce(registration_hint,'
+                   '(SELECT registration_hint FROM events WHERE id=?)) WHERE id=?', (loser, winner))
         db.execute('UPDATE aliases SET event_id=? WHERE event_id=?', (winner, loser))
         db.execute('UPDATE history SET event_id=? WHERE event_id=?', (winner, loser))
         db.execute('UPDATE analysis_cache SET event_id=? WHERE event_id=?', (winner, loser))
@@ -206,6 +286,22 @@ def run(db_path, export_path, legacy_path=None, events=None, analyzer=None, now=
                     'SELECT id,data,input_hash,completion_at FROM events WHERE normalization_version < ?',
                     (NORMALIZATION_VERSION,)).fetchall():
                 old = json.loads(payload)
+                # Older tags and categories mixed topics with event formats.
+                # Rebuild generated tags from the evidence retained in the row.
+                old['tags'] = [tag for tag in old.get('tags', []) if tag not in {*TOPICS, *EVENT_TYPES}]
+                old['category'] = None
+                description = old.get('description') or ''
+                if ((old.get('source') == 'CTFNews' and 'Главная Что такое CTF Календарь' in description)
+                        or (old.get('source') == 'Олимпиада.ру' and 'Олимпиады Новости Журнал Москва' in description)):
+                    # Old HTML adapters included navigation and unrelated news.
+                    # The previous version is still available in the history.
+                    old['description'] = None
+                    db.execute('DELETE FROM analysis_cache WHERE event_id=?', (identity,))
+                if isinstance(old.get('prize'), str) and '$' in old['prize'] and 'US' not in old['prize'].upper():
+                    old['prize_currency'] = None
+                old['end'] = old.get('end') or completion
+                if old.get('registration_open') is False and old.get('deadline') and not old.get('registration_end'):
+                    old['registration_open'] = None
                 normalized = _metadata(old, {})
                 normalized['id'] = identity
                 _save(db, normalized, fingerprint, completion)
@@ -248,36 +344,50 @@ def run(db_path, export_path, legacy_path=None, events=None, analyzer=None, now=
                     previous = db.execute('SELECT data,input_hash FROM events WHERE id=?', (identity,)).fetchone()
                     cached = db.execute('SELECT result FROM analysis_cache WHERE source=? AND canonical_url=? AND fingerprint=?',
                                         (event['source'], canonical, fingerprint)).fetchone()
-                    if not cached:
-                        result = analyzer(dict(event))
+                    last_seen = db.execute(
+                        'SELECT fingerprint FROM source_versions WHERE source=? AND canonical_url=?',
+                        (event['source'], canonical)).fetchone()
+                    if not last_seen or last_seen[0] != fingerprint:
+                        result = json.loads(cached[0]) if cached else analyzer(dict(event))
                         data = _metadata(event, result)
                         # A sparse listing must not erase prior detail after a fetch failure.
                         old = json.loads(previous[0]) if previous else {}
                         for key in FIELDS:
                             if data[key] is None and old.get(key) is not None:
                                 data[key] = old[key]
-                        data['tags'] = sorted(set(data['tags']) | set(old.get('tags', [])))
+                        if not event.get('description') and old.get('description'):
+                            data['tags'] = _metadata(data, {})['tags']
                         data.update(id=identity, created_at=old.get('created_at', stamp), updated_at=stamp)
                         completion = next((_date(event.get(k)) for k in ('end', 'finish', 'endDate') if _date(event.get(k))), None)
-                        data['status'] = 'ended' if _ended({'status':event.get('status'), 'end':completion}, now) else 'active'
-                        if sources.expired(data.get('deadline'), now):
-                            data['registration_open'] = False
+                        data['end'] = completion or data['end']
+                        status = event.get('status') or (None if completion else old.get('status'))
+                        data['status'] = 'ended' if _ended({'status': status, 'end': data['end']}, now) else 'active'
+                        row = db.execute('SELECT registration_hint FROM events WHERE id=?', (identity,)).fetchone()
+                        hint = event.get('registration_open')
+                        if type(hint) is not bool:
+                            hint = row[0] if row else None
+                        data['registration_open'] = _registration_state(data, hint, now)
                         _save(db, data, fingerprint, completion)
-                        db.execute('INSERT INTO analysis_cache VALUES (?,?,?,?,?)',
+                        db.execute('UPDATE events SET registration_hint=? WHERE id=?', (hint, identity))
+                        db.execute('INSERT OR IGNORE INTO analysis_cache VALUES (?,?,?,?,?)',
                                    (event['source'], canonical, fingerprint, encoded(result), identity))
+                        db.execute('INSERT INTO source_versions VALUES (?,?,?) '
+                                   'ON CONFLICT(source,canonical_url) DO UPDATE SET fingerprint=excluded.fingerprint',
+                                   (event['source'], canonical, fingerprint))
                     db.executemany('INSERT OR IGNORE INTO aliases VALUES (?,?)', [(key, identity) for key in keys])
             except Exception as exc:
                 LOG.warning('Catalog record skipped (%s)', type(exc).__name__)
         # Absence from an unreliable feed is never evidence that an event ended.
         with db:
-            for payload, fingerprint, completion in db.execute('SELECT data,input_hash,completion_at FROM events').fetchall():
+            for payload, fingerprint, completion, hint in db.execute('SELECT data,input_hash,completion_at,registration_hint FROM events').fetchall():
                 data = json.loads(payload)
                 changed = False
-                if data['status'] != 'ended' and _ended({'end':completion}, now):
+                if data['status'] != 'ended' and _ended(dict(data, end=data.get('end') or completion), now):
                     data['status'] = 'ended'
                     changed = True
-                if data.get('registration_open') is not False and sources.expired(data.get('deadline'), now):
-                    data['registration_open'] = False
+                registration = _registration_state(data, hint, now)
+                if data.get('registration_open') != registration:
+                    data['registration_open'] = registration
                     changed = True
                 if changed:
                     data['updated_at'] = stamp

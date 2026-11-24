@@ -1,43 +1,32 @@
-# Развёртывание OlympRadar 2
+# Развёртывание
+Используйте публичный GitHub-репозиторий со стандартным Linux runner, Cloudflare Workers Free и D1. Ветка catalog-data хранит публичные catalog.sqlite, catalog.json и catalog-aliases.json. Ветка radar-state используется только для импорта исторических хешей v1. Расписание обновления в .github/workflows/radar.yml, есть ручной запуск.
 
-## Сбор и перенос состояния
-
-Ежедневный workflow основной ветки запускается в 03:17 UTC и поддерживает Run workflow. Публичная ветка catalog-data содержит catalog.sqlite и catalog.json. SQLite хранит историю и служит входом следующего запуска. Файл .radar-state.json ветки radar-state содержит только прежние хеши резервирований. Заголовки и правила восстанавливаются повторным сбором, старые недоступные карточки из хешей восстановить нельзя. Никогда не копируйте в catalog-data персональную базу D1 или файл .env.
-
-Для автономной локальной проверки выполните:
+Проверка из корня проекта:
 
 ```bash
 python -m unittest discover -s tests
-python -m collector --db .state/dev.sqlite --export .state/catalog.json
-(cd frontend && npm ci && npm run build)
 (cd worker && npm ci && npm test)
-(cd worker && npx wrangler d1 migrations apply DB --local)
-(cd worker && npx wrangler dev --local --test-scheduled)
+python -m collector --db .state/catalog.sqlite --export .state/catalog.json
 ```
 
-## Cloudflare Free
-
-Потребуются существующий бесплатный аккаунт Cloudflare и Node 22 или новее. Соберите frontend и установите зависимости Worker, как показано выше. В каталоге worker выполните:
+В каталоге worker выполните wrangler login, затем создайте или выберите существующую D1 olympradar на бесплатном плане. Скопируйте wrangler.jsonc в игнорируемый wrangler.live.jsonc и укажите настоящий database_id. Примените миграции и опубликуйте webhook:
 
 ```bash
-npx wrangler login
-npx wrangler d1 create olympradar
-cp wrangler.jsonc wrangler.live.jsonc
+npx wrangler d1 migrations apply DB --remote -c wrangler.live.jsonc
+npx wrangler deploy -c wrangler.live.jsonc
 ```
 
-В локальной копии конфигурации укажите полученный database_id. При повторной выкладке используйте прежнюю БД. CLI может предложить обновить исходный файл автоматически; для публикации выбирайте локальную копию с реальным ID. Примените миграции и опубликуйте Worker с собранными статическими файлами:
-
-```bash
-npx wrangler d1 migrations apply DB --remote --config wrangler.live.jsonc
-npx wrangler deploy --config wrangler.live.jsonc
-```
-
-Из корня проекта выполните команду ниже с фактическим HTTPS-адресом Worker. Скрипт берёт токен из локального .env, генерирует секрет webhook и передаёт секреты Wrangler через stdin. После проверки getWebhookInfo откройте чат с ботом и нажмите «Каталог». Первый Cron заполняет D1 из публичного снимка. Если каталог ещё пуст, проверьте Worker Logs и таблицу sync_state.
+В корне проекта положите TELEGRAM_BOT_TOKEN в локальный файл .env с правами 0600. Подключите опубликованный HTTPS-адрес Worker:
 
 ```bash
 python tools/connect_telegram.py https://olympradar.ВАШ-ПОДДОМЕН.workers.dev
 ```
 
-Пользователь открывает каталог в личном чате Telegram. Для сводки он сохраняет фильтр и выбирает время, часовой пояс и порог в настройках. До подключения боевого webhook старая поштучная доставка отключена.
+Команда регистрирует webhook для сообщений и нажатий, настраивает список команд и проверяет конфигурацию Telegram. Первый Cron импортирует каталог; для немедленной загрузки опубликованной ветки используйте tools/seed-catalog.mjs и wrangler d1 execute, из каталога worker:
 
-Для первичного наполнения до первого Cron можно явно импортировать опубликованный снимок. Сначала получите catalog-data из своего репозитория, затем из корня выполните `node tools/seed-catalog.mjs .state/bootstrap.sql .state/catalog` и из worker выполните `npx wrangler d1 execute DB --remote -c wrangler.live.jsonc --file ../.state/bootstrap.sql --yes`. Эта процедура обновляет только публичный каталог и переносит ссылки для объединённых карточек. Обычные пользовательские изменения хранятся в D1.
+```bash
+# Из корня проекта, где .state/catalog — рабочая копия ветки catalog-data
+node tools/seed-catalog.mjs .state/bootstrap.sql .state/catalog
+(cd worker && npx wrangler d1 execute DB --remote -c wrangler.live.jsonc --file ../.state/bootstrap.sql --yes)
+```
+ Не помещайте персональную D1 в публичную ветку.

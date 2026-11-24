@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
-import { safeUrl, buildEventQuery, authenticate } from "./index.js";
+import { safeUrl, buildEventQuery } from "./index.js";
 globalThis.crypto ||= webcrypto;
 test("URLs reject executable schemes and embedded credentials", () => {
   assert.equal(safeUrl("javascript:alert(1)"), null);
@@ -25,42 +25,6 @@ test("SQL uses bound input and per-user favorites", () => {
   assert.equal(q.page, 1);
   assert.equal(q.order, "julianday(e.created_at) DESC");
 });
-test("Telegram auth rejects unsigned and stale data", async () => {
-  await assert.rejects(
-    authenticate('user={"id":42}&auth_date=1&hash=' + "0".repeat(64), "secret"),
-  );
-  await assert.rejects(authenticate(null, "secret"));
-});
-test("Telegram valid signature and tampering", async () => {
-  const p = new URLSearchParams({
-    auth_date: String(Math.floor(Date.now() / 1000)),
-    user: JSON.stringify({ id: 42 }),
-  });
-  const sign = async (key, value) => {
-    const k = await crypto.subtle.importKey(
-      "raw",
-      key,
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-    return new Uint8Array(
-      await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(value)),
-    );
-  };
-  const secret = await sign(
-    new TextEncoder().encode("WebAppData"),
-    "test-token",
-  );
-  const check = [...p]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
-  p.set("hash", Buffer.from(await sign(secret, check)).toString("hex"));
-  assert.equal(await authenticate(p.toString(), "test-token"), "42");
-  p.set("user", '{"id":43}');
-  await assert.rejects(authenticate(p.toString(), "test-token"));
-});
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { queryEvents, syncCatalog } from "./index.js";
@@ -78,6 +42,7 @@ function localDB() {
       "utf8",
     ),
   );
+  db.exec(readFileSync(new URL("./migrations/0003_dates.sql",import.meta.url),"utf8"));
   return {
     prepare(sql) {
       return {
@@ -182,121 +147,6 @@ test("Catalog sync sanitizes links and preserves missing catalog statuses", asyn
   }
 });
 import worker from "./index.js";
-async function initData(id) {
-  const p = new URLSearchParams({
-    auth_date: String(Math.floor(Date.now() / 1000)),
-    user: JSON.stringify({ id }),
-  });
-  const sign = async (key, value) => {
-    const k = await crypto.subtle.importKey(
-      "raw",
-      key,
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-    return new Uint8Array(
-      await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(value)),
-    );
-  };
-  const secret = await sign(
-    new TextEncoder().encode("WebAppData"),
-    "test-token",
-  );
-  const check = [...p]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
-  p.set("hash", Buffer.from(await sign(secret, check)).toString("hex"));
-  return p.toString();
-}
-test("HTTP API authenticates, persists settings and isolates private resources", async () => {
-  const DB = localDB();
-  const env = { DB, TELEGRAM_BOT_TOKEN: "test-token" };
-  const call = async (id, path, method = "GET", body) =>
-    worker.fetch(
-      new Request("https://local.test" + path, {
-        method,
-        headers: {
-          "X-Telegram-Init-Data": await initData(id),
-          "Content-Type": "application/json",
-        },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      }),
-      env,
-    );
-  try {
-    assert.equal(
-      (await worker.fetch(new Request("https://local.test/api/me"), env))
-        .status,
-      401,
-    );
-    const created = await call(42, "/api/filters", "POST", {
-      name: "Math",
-      query: { q: "math" },
-    });
-    assert.equal(created.status, 201);
-    const filter = await created.json();
-    assert.equal(
-      (await call(43, "/api/filters/" + filter.id, "DELETE")).status,
-      200,
-    );
-    assert.equal((await (await call(42, "/api/me")).json()).filters.length, 1);
-    assert.equal((await (await call(43, "/api/me")).json()).filters.length, 0);
-    assert.equal(
-      (
-        await call(43, "/api/settings", "PUT", {
-          enabled: true,
-          filter_ids: [filter.id],
-        })
-      ).status,
-      400,
-    );
-    assert.equal(
-      (
-        await call(42, "/api/settings", "PUT", {
-          enabled: true,
-          time: "10:15",
-          timezone: "Europe/Moscow",
-        })
-      ).status,
-      200,
-    );
-    assert.equal(
-      (await (await call(42, "/api/me")).json()).settings.enabled,
-      true,
-    );
-  } finally {
-    DB.db.close();
-  }
-});
-import { createServer } from "node:http";
-test("Local HTTP fetch exercises signed API through Worker and SQLite", async () => {
-  const DB = localDB();
-  const server = createServer(async (req, res) => {
-    const request = new Request("http://127.0.0.1" + req.url, {
-      headers: req.headers,
-    });
-    const response = await worker.fetch(request, {
-      DB,
-      TELEGRAM_BOT_TOKEN: "test-token",
-    });
-    res.writeHead(response.status, Object.fromEntries(response.headers));
-    res.end(await response.text());
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  try {
-    const response = await fetch(
-      `http://127.0.0.1:${server.address().port}/api/me`,
-      { headers: { "X-Telegram-Init-Data": await initData(99) } },
-    );
-    assert.equal(response.status, 200);
-    assert.deepEqual((await response.json()).favorites, []);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-    DB.db.close();
-  }
-});
 import { execFileSync } from "node:child_process";
 test("Actual collector export roundtrips public-only JSON through D1 and signed search API", async () => {
   const source = execFileSync(
@@ -324,14 +174,7 @@ with tempfile.TemporaryDirectory() as tmp:
     await syncCatalog({ DB });
     const stored = DB.db.prepare("SELECT * FROM events").get();
     assert.equal(stored.title, catalog[0].title);
-    const env = { DB, TELEGRAM_BOT_TOKEN: "test-token" };
-    const request = new Request(
-      "https://local.test/api/events?q=Quantum&start_from=2026-12-20T09%3A00%3A00Z&deadline_to=2026-12-21T09%3A00%3A00Z",
-      { headers: { "X-Telegram-Init-Data": await initData(101) } },
-    );
-    const response = await worker.fetch(request, env);
-    assert.equal(response.status, 200);
-    const result = await response.json();
+    const result = await queryEvents(DB, {q:"Quantum", start_from:"2026-12-20", deadline_to:"2026-12-21"}, "101");
     assert.equal(result.total, 1);
     assert.equal(result.items[0].id, catalog[0].id);
     assert.ok(!JSON.stringify(result).includes("telegram_id"));
@@ -373,4 +216,26 @@ test("Catalog alias migration atomically merges favorites and urgent reservation
     globalThis.fetch = oldFetch;
     DB.db.close();
   }
+});
+
+test("AI searches use a topic across event types and date-only upper bounds include evening", async () => {
+  const d = localDB();
+  try {
+    const insert = d.db.prepare("INSERT INTO events(id,title,status,category,tags_json,start,registration_end,deadline) VALUES(?,?,'active',?,?,?,?,?)");
+    insert.run("ml","Нейросети","olympiad",'["ai","ml"]',"2027-01-22","2027-01-10T22:30:00Z",null);
+    insert.run("ctf","Чемпионат","ctf",'["ai"]',null,null,"2027-01-01");
+    insert.run("misc","AI mentioned in general rules","olympiad","[]",null,null,null);
+    for (const q of ["ИИ", "ai", "искусственный интеллект", "по искусственному интеллекту"])
+      assert.equal((await queryEvents(d,{q},"1")).total,2);
+    assert.equal((await queryEvents(d,{q:"олимпиады по ИИ"},"1")).total,1);
+    assert.equal((await queryEvents(d,{registration_end_to:"2027-01-10"},"1")).items[0].id,"ml");
+    assert.equal((await queryEvents(d,{deadline_to:"2027-01-10"},"1")).items[0].id,"ctf");
+  } finally { d.db.close(); }
+});
+
+test("website and Mini App API retired; webhook authenticates callbacks before touching DB",async()=>{
+  const env={WEBHOOK_SECRET:"test-only"};
+  for(const path of ["/","/api/me","/assets/main.js"])
+    assert.equal((await worker.fetch(new Request("https://local"+path),env)).status,404);
+  assert.equal((await worker.fetch(new Request("https://local/telegram",{method:"POST",body:"{}"}),env)).status,401);
 });

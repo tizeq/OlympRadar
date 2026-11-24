@@ -106,7 +106,7 @@ test("top three, no old entries, reserved before network and no retry after fail
     db.close();
   }
 });
-test("empty digest does not send, filter creation excludes backlog, urgent needs opt in", async () => {
+test("empty digest does not send, filter creation excludes backlog, legacy urgent setting never sends", async () => {
   const { db, env, add, settings } = fixture();
   try {
     add("earlier");
@@ -138,8 +138,7 @@ test("empty digest does not send, filter creation excludes backlog, urgent needs
         "1",
       );
       await sendDueDigests(env, new Date("2026-01-05T09:00:00Z"));
-      await sendDueDigests(env, new Date("2026-01-05T09:01:00Z"));
-      assert.equal(calls, 1);
+      assert.equal(calls, 0);
     } finally {
       globalThis.fetch = original;
     }

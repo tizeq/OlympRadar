@@ -1,4 +1,4 @@
-import { buildEventQuery, safeUrl } from "./index.js";
+import { buildEventQuery } from "./index.js";
 
 export function localClock(now, timezone) {
   const parts = Object.fromEntries(
@@ -25,12 +25,8 @@ const clean = (value) =>
     .replace(/[\x00-\x1f\x7f]/g, " ")
     .slice(0, 180);
 async function telegram(env, uid, text) {
-  const url = safeUrl(env.APP_URL);
-  const body = { chat_id: uid, text, disable_web_page_preview: true };
-  if (url?.startsWith("https:"))
-    body.reply_markup = {
-      inline_keyboard: [[{ text: "Открыть каталог", web_app: { url } }]],
-    };
+  const body = {chat_id: uid, text, disable_web_page_preview: true,
+    reply_markup: {inline_keyboard: [[{text: "Открыть каталог", callback_data: "catalog"}]]}};
   const response = await fetch(
     `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`,
     {
@@ -123,7 +119,7 @@ export async function dailyCandidates(db, user, settings, cutoff) {
 
 async function processUser(env, user, now) {
   const settings = JSON.parse(user.settings_json);
-  if (settings.enabled !== true && settings.urgent !== true) return;
+  if (settings.enabled !== true) return;
   const stamp = now.toISOString();
   if (settings.enabled === true) {
     const clock = localClock(now, settings.timezone || "Europe/Moscow");
@@ -167,39 +163,7 @@ async function processUser(env, user, now) {
       }
     }
   }
-  if (settings.urgent === true) {
-    // Explicit favorites only; ISO date-only deadlines expire at the end of the UTC day.
-    const deadline =
-      "julianday(CASE WHEN length(e.deadline)=10 THEN e.deadline || 'T23:59:59Z' ELSE e.deadline END)";
-    const rows = await env.DB.prepare(
-      `SELECT e.id,e.title,e.deadline FROM events e JOIN favorites f ON f.event_id=e.id WHERE f.user_id=?1 AND e.status='active' AND ${deadline}>julianday(?2) AND ${deadline}<=julianday(?2)+1 AND NOT EXISTS(SELECT 1 FROM urgent_deliveries d WHERE d.user_id=f.user_id AND d.event_id=e.id AND d.deadline=e.deadline) ORDER BY ${deadline},e.id LIMIT 3`,
-    )
-      .bind(user.telegram_id, stamp)
-      .all();
-    const due = rows.results;
-    const reserved = [];
-    for (const e of due) {
-      const result = await env.DB.prepare(
-        "INSERT OR IGNORE INTO urgent_deliveries(user_id,event_id,deadline,reserved_at) VALUES(?,?,?,?)",
-      )
-        .bind(user.telegram_id, e.id, e.deadline, stamp)
-        .run();
-      if (changes(result)) reserved.push(e);
-    }
-    if (reserved.length)
-      try {
-        await telegram(
-          env,
-          user.telegram_id,
-          "Скоро дедлайн избранных:\n\n" +
-            reserved
-              .map((e) => `${clean(e.title)} — ${clean(e.deadline)}`)
-              .join("\n"),
-        );
-      } catch {
-        console.error("Urgent delivery failed");
-      }
-  }
+
 }
 export async function sendDueDigests(env, now = new Date()) {
   if (!env.TELEGRAM_BOT_TOKEN) return { processed: 0 };

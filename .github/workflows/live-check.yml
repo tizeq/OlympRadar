@@ -1,4 +1,4 @@
-name: Check public Mini App
+name: Check webhook boundary
 on: workflow_dispatch
 permissions: {}
 jobs:
@@ -7,9 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Check production frontend and API authentication
+      - name: Check webhook authentication and retired website
         run: |
           origin=https://olympradar.olympradar-worker.workers.dev
-          curl -fsS --max-time 25 --retry 2 "$origin/" > /tmp/index.html
-          grep -q '<title>OlympRadar' /tmp/index.html
-          test "$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$origin/api/me")" = 401
+          test "$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$origin/")" = 404
+          test "$(curl -sS --max-time 25 -X POST -o /dev/null -w '%{http_code}' "$origin/telegram")" = 401
