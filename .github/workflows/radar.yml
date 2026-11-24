@@ -1,56 +1,55 @@
-name: OlympRadar
+name: OlympRadar daily catalog
 on:
   schedule:
-    - cron: '17 */2 * * *'
+    - cron: '17 3 * * *'
   workflow_dispatch:
-    inputs:
-      preview:
-        description: 'Collect real events without Telegram delivery'
-        type: boolean
-        default: false
 permissions:
   contents: write
 concurrency:
-  group: olymp-radar-delivery
+  group: olymp-radar-catalog
   cancel-in-progress: false
 jobs:
-  radar:
-    # Public standard runners are free; private repositories must not run this job.
+  collect:
     if: github.event.repository.private == false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run offline checks
-        run: python -m unittest discover -s tests
-      - name: Preview live sources
-        if: inputs.preview == true
-        run: python -m radar
-      - name: Collect, reserve, and notify
-        if: inputs.preview != true
+      - run: python -m unittest discover -s tests
+      - uses: actions/checkout@v4
+        with:
+          ref: catalog-data
+          path: .state/catalog
+      - name: Read legacy reservation hashes
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/.radar-state.json?ref=radar-state" --jq .content | base64 -d > .state/legacy.json
+      - name: Refresh catalog
+        env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           GEMINI_ENABLED: ${{ vars.GEMINI_ENABLED || '0' }}
           GEMINI_ADULT_CONFIRMED: ${{ vars.GEMINI_ADULT_CONFIRMED || '0' }}
           GEMINI_AVAILABLE_REGION_CONFIRMED: ${{ vars.GEMINI_AVAILABLE_REGION_CONFIRMED || '0' }}
           GEMINI_FREE_TIER_CONFIRMED: ${{ vars.GEMINI_FREE_TIER_CONFIRMED || '0' }}
-          # Fresh hosted runner: deliberately allow at most ONE model attempt per run.
-          # No claim of a durable, shared daily quota across manual/rerun jobs.
-          GEMINI_DAILY_LIMIT: '1'
-          GEMINI_QUOTA_PATH: ${{ runner.temp }}/olympradar-gemini-quota.sqlite3
           CTFTIME_ENABLED: ${{ vars.CTFTIME_ENABLED || '0' }}
           SOURCE_OVERRIDES_FILE: ${{ vars.SOURCE_OVERRIDES_FILE }}
           RADAR_PROFILE_PATH: ${{ vars.RADAR_PROFILE_PATH }}
-          STATE_BRANCH: radar-state
-          MIN_SCORE: ${{ vars.MIN_SCORE || '45' }}
-        run: python -m radar --send
+        run: python -m collector --db .state/catalog/catalog.sqlite --export .state/catalog/catalog.json --legacy .state/legacy.json
+      - name: Publish public snapshot
+        working-directory: .state/catalog
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add catalog.sqlite catalog.json catalog-aliases.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Refresh daily competition catalog'
+            git push origin HEAD:catalog-data
+          fi

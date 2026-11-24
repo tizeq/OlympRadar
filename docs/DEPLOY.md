@@ -1,41 +1,41 @@
-# Бесплатный запуск OlympRadar
+# Развёртывание OlympRadar 2
 
-Создайте **публичный** GitHub-репозиторий с этим кодом. Workflow намеренно пропускает private repositories: стандартные GitHub-hosted runners публичных репозиториев бесплатны; larger runners платные. Встроенный workflow использует только `ubuntu-latest`, стандартную библиотеку Python и запуск каждые два часа. [GitHub billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+## Сбор и перенос состояния
 
-## Однократная настройка
+Ежедневный workflow основной ветки запускается в 03:17 UTC и поддерживает Run workflow. Публичная ветка catalog-data содержит catalog.sqlite и catalog.json. SQLite хранит историю и служит входом следующего запуска. Файл .radar-state.json ветки radar-state содержит только прежние хеши резервирований. Заголовки и правила восстанавливаются повторным сбором, старые недоступные карточки из хешей восстановить нельзя. Никогда не копируйте в catalog-data персональную базу D1 или файл .env.
 
-1. Через GitHub UI создайте ветку `radar-state` от основной ветки. В этой ветке создайте файл `.radar-state.json` с содержимым `{"version":1,"keys":[]}`. Не добавляйте этот файл в основную ветку. Не удаляйте и не откатывайте журнал: это разрешит повторные уведомления. Не используйте одну ветку состояния для разных получателей.
-2. Создайте Telegram-бота через [BotFather](https://t.me/BotFather), откройте его в Telegram и нажмите Start. Для канала добавьте бота с правом публиковать сообщения. Узнайте `chat_id` через официальный `getUpdates` после сообщения боту; не передавайте токен сторонним сайтам. [Telegram introduction](https://core.telegram.org/bots/tutorial), [Bot API](https://core.telegram.org/bots/api#getupdates).
-3. В Settings → Secrets and variables → Actions добавьте secrets `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Необязательный `GEMINI_API_KEY` описан в [GEMINI.md](GEMINI.md). Необязательная repository variable `MIN_SCORE` задаёт порог, по умолчанию 45.
-4. Разрешите GitHub Actions и запись `contents` для `GITHUB_TOKEN`. Если branch protection блокирует запись в `radar-state`, доставка остановится. Не снимайте защиту основной ветки.
-5. Откройте Actions → OlympRadar → Run workflow. Ручной запуск всегда берёт код основной ветки. Проверьте результат и Telegram. Никогда не печатайте секреты или URL Bot API с токеном в логах.
+Для автономной локальной проверки выполните:
 
-Локальный безопасный просмотр: `python -m radar`. Локальная отправка: экспортируйте `GITHUB_REPOSITORY=owner/repo`, `GITHUB_TOKEN` с правом Contents write, Telegram secrets и запустите `python -m radar --send`. Локальный и облачный запуски используют один журнал. Не запускайте другую реализацию, обходящую резервирование.
+```bash
+python -m unittest discover -s tests
+python -m collector --db .state/dev.sqlite --export .state/catalog.json
+(cd frontend && npm ci && npm run build)
+(cd worker && npm ci && npm test)
+(cd worker && npx wrangler d1 migrations apply DB --local)
+(cd worker && npx wrangler dev --local --test-scheduled)
+```
 
-## Безопасная локальная настройка
+## Cloudflare Free
 
-В терминале проекта выполните `python setup_local.py configure`. Команда скрыто запросит `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GITHUB_REPOSITORY`, `GITHUB_TOKEN`; Enter сохраняет уже записанное значение. Она создаёт `.env` атомарно с правами `0600` и ничего не отправляет. `.env` исключён из git. Не вставляйте секреты в командную строку, чат, скриншоты или логи. Альтернатива — скопировать `.env.example` в `.env` и сразу выполнить `chmod 600 .env` перед заполнением. Файл разбирается как данные, shell-код не выполняется; не используйте `source .env`.
+Потребуются существующий бесплатный аккаунт Cloudflare и Node 22 или новее. Соберите frontend и установите зависимости Worker, как показано выше. В каталоге worker выполните:
 
-Если ID чата неизвестен, пропустите его при вводе, отправьте `/start` боту в Telegram и выполните `python setup_local.py discover-chat`. Команда читает `getUpdates`, показывает только ID и типы чатов и предлагает сохранить выбранный ID. Она не отправляет сообщения и не подтверждает обновления через offset. При активном webhook или другом poller возможен отказ; инструмент не меняет webhook и не останавливает другие приложения. Ключ Telegram берётся из `.env`, не из аргументов команды.
+```bash
+npx wrangler login
+npx wrangler d1 create olympradar
+cp wrangler.jsonc wrangler.live.jsonc
+```
 
-Для **отдельной разовой тестовой отправки** выполните `python setup_local.py test-send`. Только эта явная команда делает один запрос `sendMessage` с текстом «OlympRadar: тест подключения.», проверяет `ok=true` и положительный `message_id` и выводит ID доставленного сообщения. Тест не участвует в журнале олимпиад. Автоматических повторов нет; повторное выполнение команды создаёт ещё одно тестовое сообщение. При тайм-ауте результат неизвестен — проверьте Telegram перед ручным повтором.
+В локальной копии конфигурации укажите полученный database_id. При повторной выкладке используйте прежнюю БД. CLI может предложить обновить исходный файл автоматически; для публикации выбирайте локальную копию с реальным ID. Примените миграции и опубликуйте Worker с собранными статическими файлами:
 
-`python setup_local.py run` загружает `.env` и запускает безопасный предпросмотр; `python setup_local.py run --send` запускает доставку с долговременным резервированием. Обычный `python -m radar` использует только уже экспортированные переменные. Значения существующего окружения имеют приоритет над `.env`. Для другого файла: `python setup_local.py --env-file /путь/к/файлу run`. Файл с правами доступа для группы/других пользователей или symlink отвергается. Gemini по умолчанию выключен; его дополнительные поля есть в `.env.example`.
+```bash
+npx wrangler d1 migrations apply DB --remote --config wrangler.live.jsonc
+npx wrangler deploy --config wrangler.live.jsonc
+```
 
-Для Gemini настройте repository variables `GEMINI_MODEL`, `GEMINI_ENABLED`, `GEMINI_ADULT_CONFIRMED`, `GEMINI_AVAILABLE_REGION_CONFIRMED`, `GEMINI_FREE_TIER_CONFIRMED` согласно [GEMINI.md](GEMINI.md). По умолчанию подтверждения равны `0` и Gemini выключен. Workflow передаёт ключ только из secret `GEMINI_API_KEY`. На свежем runner нет постоянного SQLite: workflow консервативно фиксирует `GEMINI_DAILY_LIMIT=1` и `GEMINI_QUOTA_PATH` во временном каталоге runner. Поэтому допускается **не более одной попытки модели за запуск**, до 12 при штатном расписании за сутки; ручные запуски и rerun добавляют попытки. Это не глобальный дневной лимит. Не подключайте billing; без подтверждённого бесплатного проекта оставляйте Gemini выключенным.
+Из корня проекта выполните команду ниже с фактическим HTTPS-адресом Worker. Скрипт берёт токен из локального .env, генерирует секрет webhook и передаёт секреты Wrangler через stdin. После проверки getWebhookInfo откройте чат с ботом и нажмите «Каталог». Первый Cron заполняет D1 из публичного снимка. Если каталог ещё пуст, проверьте Worker Logs и таблицу sync_state.
 
-## Расписание и журнал
+```bash
+python tools/connect_telegram.py https://olympradar.ВАШ-ПОДДОМЕН.workers.dev
+```
 
-Расписание `17 */2 * * *` — каждые два часа, в 00:17, 02:17, …, 22:17 UTC (по Москве 03:17, 05:17, …, 01:17). Cron выполняется с основной ветки, допускает задержки и пропуски; в публичных репозиториях GitHub отключает расписание после 60 дней без активности. Периодически проверяйте Actions и при необходимости снова включайте workflow. Точное время доставки не гарантируется. [GitHub schedule](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
-
-Перед запросом Telegram приложение сохраняет SHA-256 всех псевдонимов события в `.radar-state.json` через GitHub Contents API. Обновление передаёт текущий SHA файла: конфликт конкурирующих записей приводит к отказу, а не к отправке. Один workflow concurrency group дополнительно предотвращает параллельные запуски; `cancel-in-progress: false` защищает текущий процесс от отмены новым запуском. [Contents API](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents), [concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
-
-Если файл отсутствует, повреждён, недоступен, запись запрещена или результат сохранения неопределён — отправки нет. При найденном псевдониме новые псевдонимы сохраняются, повторной отправки нет. GitHub cache и artifacts не используются для дедупликации: cache может удаляться после семи дней без обращения. [Cache retention](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy).
-
-Гарантия — **не более одной попытки отправки** для известных псевдонимов, а не гарантированное получение. Авария после резервирования и до Telegram теряет уведомление. Тайм-аут, HTTP 429/5xx или неоднозначный ответ Telegram не повторяются: резервирование остаётся. Bot API `sendMessage` не предоставляет ключ идемпотентности; автоматически безопасно повторить неопределённую отправку нельзя. Приложение отправляет обычный текст до 4000 символов без платного broadcast. [sendMessage](https://core.telegram.org/bots/api#sendmessage).
-
-Резервирование необратимо в обычном режиме. После сбоя изучите лог и Telegram вручную; откат журнала может создать дубли. Изменённые названия/адреса без общего псевдонима могут обойти дедупликацию. Журнал публичен и содержит только хеши идентификаторов событий, но хеширование не делает предсказуемые данные секретными.
-
-## Проверка
-
-`python -m unittest discover -s tests` запускает локальные тесты, включая имитацию перезапуска, неизвестного результата Telegram, недоступного/повреждённого журнала, связывания псевдонимов и конкурирующего чтения. Тесты не отправляют сообщения и не обращаются в сеть.
+Пользователь открывает каталог в личном чате Telegram. Для сводки он сохраняет фильтр и выбирает время, часовой пояс и порог в настройках. До подключения боевого webhook старая поштучная доставка отключена.

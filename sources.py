@@ -126,7 +126,7 @@ def expired(value, now):
         return False
 
 
-def enrich(event, getter=fetch, override=None, now=None):
+def enrich(event, getter=fetch, override=None, now=None, *, include_closed=False):
     """Bounded detail/rules reads; only explicit official rules become rules_text."""
     event = dict(event)
     now = now or dt.datetime.now(dt.timezone.utc)
@@ -134,8 +134,12 @@ def enrich(event, getter=fetch, override=None, now=None):
     page = Page()
     page.feed(getter(event["url"]))
     text = " ".join(" ".join(page.text).split())
-    if re.search(r"\bthis (?:hackathon|challenge|competition) has ended\b|регистрация завершена|соревнование завершено", text, re.I):
-        return None
+    if re.search(r"\bthis (?:hackathon|challenge|competition) has ended\b|соревнование завершено", text, re.I):
+        return dict(event, status="ended", registration_open=False) if include_closed else None
+    if re.search(r"регистрация завершена", text, re.I):
+        if not include_closed:
+            return None
+        event["registration_open"] = False
     event["description"] = text[:12000]
     # JSON-LD Event dates have defined semantics; publication dates do not.
     def walk(node):
@@ -153,10 +157,10 @@ def enrich(event, getter=fetch, override=None, now=None):
             # Avoid applying a sidebar's dates to this event.
             if item.get("url", event["url"]).rstrip("/") != event["url"].rstrip("/"):
                 continue
-            if item.get("eventStatus", "").endswith("EventCancelled"):
-                return None
-            if expired(item.get("endDate"), now):
-                return None
+            if item.get("eventStatus", "").endswith("EventCancelled") or expired(item.get("endDate"), now):
+                return dict(event, status="ended", registration_open=False) if include_closed else None
+            if isinstance(item.get("endDate"), str):
+                event["end"] = item["endDate"]
             if isinstance(item.get("startDate"), str):
                 event["start"] = item["startDate"]
     official_host = urlsplit(event["url"]).hostname
@@ -176,7 +180,9 @@ def enrich(event, getter=fetch, override=None, now=None):
     if isinstance(override.get("deadline"), str):
         event["deadline"] = override["deadline"]
     if expired(event.get("deadline"), now):
-        return None
+        if not include_closed:
+            return None
+        event["registration_open"] = False
     if event.get("rules_url"):
         try:
             rules = Page()
@@ -237,7 +243,10 @@ def codeforces(getter=fetch):
                  "source": "Codeforces", "format": "online"}
         if item.get("startTimeSeconds") is not None:
             try:
-                event["start"] = dt.datetime.fromtimestamp(item["startTimeSeconds"], dt.timezone.utc).isoformat()
+                start = dt.datetime.fromtimestamp(item["startTimeSeconds"], dt.timezone.utc)
+                event["start"] = start.isoformat()
+                if type(item.get("durationSeconds")) is int and item["durationSeconds"] > 0:
+                    event["end"] = (start + dt.timedelta(seconds=item["durationSeconds"])).isoformat()
             except (TypeError, ValueError, OverflowError, OSError):
                 LOG.warning("Codeforces: invalid start time omitted")
         yield event
@@ -255,7 +264,7 @@ def ctftime(getter=fetch):
             LOG.warning("CTFtime: unexpected event URL skipped")
             continue
         event = {"title": item["title"], "url": item["ctftime_url"], "source": "CTFtime",
-                 "start": item.get("start"), "description": item.get("description", "")}
+                 "start": item.get("start"), "end": item.get("finish"), "description": item.get("description", "")}
         if isinstance(item.get("onsite"), bool):
             event["format"] = "onsite" if item["onsite"] else "online"
         yield event
@@ -275,7 +284,7 @@ def adapters(getter=fetch):
         yield "CTFtime", lambda: ctftime(getter)
 
 
-def collect(getter=fetch):
+def collect(getter=fetch, on_source=None):
     """Yield valid events, isolating source and individual record errors."""
     try:
         overrides = load_overrides()
@@ -297,7 +306,7 @@ def collect(getter=fetch):
                 if detail_budget and (name != "Codeforces" or event["url"] in overrides):
                     detail_budget -= 1
                     try:
-                        event = enrich(event, getter, overrides.get(event["url"]))
+                        event = enrich(event, getter, overrides.get(event["url"]), include_closed=True)
                     except Exception as exc:
                         LOG.warning("%s: detail unavailable (%s)", name, type(exc).__name__)
                     if event is None:
@@ -306,5 +315,9 @@ def collect(getter=fetch):
                 yield event
             if not count:
                 LOG.warning("%s: no events extracted (empty feed or changed markup)", name)
+            if on_source:
+                on_source(name, "ok" if count else "empty", count)
         except Exception as exc:
+            if on_source:
+                on_source(name, "error", count)
             LOG.warning("%s: source unavailable (%s)", name, type(exc).__name__)

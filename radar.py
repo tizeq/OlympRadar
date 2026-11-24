@@ -8,7 +8,6 @@ import unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import analysis
-import delivery
 import sources
 
 
@@ -32,17 +31,14 @@ def run(send=False):
     threshold = int(os.getenv("MIN_SCORE", "45"))
     if not 0 <= threshold <= 100:
         raise ValueError("MIN_SCORE must be 0..100")
-    if send and not all(os.getenv(k) for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")):
-        raise ValueError("Telegram credentials required")
+    if send:
+        raise ValueError("Per-event delivery retired. Run python -m collector.")
     seen = set()
     total = 0
     for event in sources.collect():
         total += 1
         keys = aliases(event)
         if not keys:
-            continue
-        if send and delivery.known(keys):
-            delivery.reserve(keys)
             continue
         if seen.intersection(keys):
             seen.update(keys)
@@ -58,12 +54,8 @@ def run(send=False):
         if result["score"] < threshold:
             continue
         seen.update(keys)
-        if send:
-            if delivery.reserve(keys):
-                delivery.send(event, result)
-        else:
-            title = "".join(ch for ch in event["title"] if ch.isprintable())
-            print(result["score"], title, event["url"])
+        title = "".join(ch for ch in event["title"] if ch.isprintable())
+        print(result["score"], title, event["url"])
     if not total:
         logging.warning("No candidates returned by any source")
         return 1

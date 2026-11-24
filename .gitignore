@@ -5,3 +5,12 @@ __pycache__/
 
 .env.*
 !.env.example
+
+node_modules/
+dist/
+.wrangler/
+.dev.vars*
+
+worker/wrangler.live.json*
+
+*.tsbuildinfo

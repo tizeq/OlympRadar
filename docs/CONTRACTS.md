@@ -1,9 +1,6 @@
-# Контракты OlympRadar
-Python 3.11+, стандартная библиотека. Модули верхнего уровня.
+# Контракты 2.0
+Ветка catalog-data содержит catalog.json как массив объектов. Поля id,title,url,source,description,category,tags (массив строк),start,deadline,prize,format,restrictions,ai_policy,registration_url,country,age_min,age_max,free (boolean/null),prize_amount,prize_currency,difficulty,registration_open,score,status (active/ended),created_at,updated_at. Даты ISO. Неизвестные поля nullable.
+Worker env.DB, TELEGRAM_BOT_TOKEN, WEBHOOK_SECRET. Worker отдаёт frontend из ASSETS. Заголовок X-Telegram-Init-Data для всех /api/*. GET /api/events принимает q,category,tag,start_from,deadline_from,deadline_to,registration_open,format,country,age,free,cash,ai_policy,difficulty,min_score,sort (new/deadline/score/prize),currency,page,favorites; ответ {items,total}. GET /api/me => {favorites:[id],filters:[{id,name,query}],settings:{enabled,time,timezone,min_score,filter_ids,urgent}}. PUT/DELETE /api/favorites/:id; POST /api/filters {name,query}; DELETE /api/filters/:id; PUT /api/settings с объектом settings.
+Backend владеет D1 migrations, поиском, webhook, digest и синхронизацией каталога. Collector владеет публичной SQLite и экспортом. UI использует только API. Путь Telegram webhook /telegram. Для синхронизации backend экспортирует syncCatalog(env) или реализует scheduled handler.
 
-- sources.collect() возвращает iterable словарей. Обязательны title, url, source. Дополнительны start (ISO 8601), description, registration_url, rules_url, rules_text (только официальный регламент), deadline, prize, format, restrictions. Отказ одного адаптера изолирован.
-- analysis.analyze(event) возвращает словарь score (целое 0–100), ai_policy, deadline, prize, format, restrictions. Неизвестные значения допустимы. Сбой модели включает локальный алгоритм.
-- delivery.reserve(keys) возвращает bool. True означает долговременную фиксацию новой попытки по всем псевдонимам. delivery.send(event, assessment) отправляет сообщение один раз. Отказ хранилища блокирует отправку.
-- python -m radar выполняет безопасный предпросмотр, --send включает доставку. MIN_SCORE задаёт порог.
-
-delivery.known(keys) использует кэш снимка журнала. При совпадении вызывающий всё равно передаёт все ключи в reserve, чтобы связать новые адреса с прежней записью. Каждая запись относится к одному получателю. Ошибка отправки завершает запуск, ранее зарезервированные события сохраняются.
+Worker entrypoint — worker/entrypoint.js (только default handler); библиотечные экспорты находятся в index.js. catalog-aliases.json на catalog-data — объект {old_id:winner_id}; sync переносит избранное и резервирования urgent атомарно, затем удаляет старые события. 404 aliases допускается только до первого успешного sync.
