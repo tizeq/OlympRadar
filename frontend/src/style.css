@@ -1782,3 +1782,17 @@ footer {
     padding: 16px;
   }
 }
+.category-tabs {
+  scrollbar-width: thin;
+  scrollbar-color: #c9d3bb transparent;
+}
+.category-tabs::-webkit-scrollbar {
+  height: 3px;
+}
+.category-tabs::-webkit-scrollbar-thumb {
+  background: #c9d3bb;
+  border-radius: 5px;
+}
+.catalog-toolbar select:disabled {
+  opacity: 0.8;
+}

@@ -8,7 +8,7 @@ import secrets
 import subprocess
 import sys
 from urllib.parse import urlsplit
-from urllib.request import urlopen
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -24,9 +24,9 @@ def main():
     if url.scheme != 'https' or not url.hostname or url.netloc != url.hostname or url.path not in ('', '/'):
         parser.error('Expected bare HTTPS origin')
     origin = f'https://{url.hostname}'
-    with urlopen(origin, timeout=15) as response:
-        if 'olympradar' not in response.read(100000).decode().lower():
-            parser.error('Mini App unavailable at this origin')
+    html = subprocess.check_output(['curl', '-fsS', '--max-time', '25', origin + '/'])
+    if b'<title>OlympRadar' not in html:
+        parser.error('Mini App unavailable at this origin')
     load_env(ROOT / '.env')
     token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     if not re.fullmatch(r'\d+:[\w-]+', token):

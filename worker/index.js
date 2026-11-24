@@ -364,13 +364,13 @@ const fields = [
   "created_at",
   "updated_at",
 ];
-export async function syncCatalog(env) {
+export async function syncCatalog(env, readSnapshot = fetch) {
   const prior = await env.DB.prepare(
     "SELECT last_sync FROM sync_state WHERE id=1",
   ).first();
   if (prior?.last_sync && Date.now() - Date.parse(prior.last_sync) < 86400000)
     return { skipped: true };
-  const response = await fetch(CATALOG_URL, {
+  const response = await readSnapshot(CATALOG_URL, {
     signal: AbortSignal.timeout(20000),
     redirect: "error",
     headers: { Accept: "application/json" },
@@ -383,7 +383,7 @@ export async function syncCatalog(env) {
   const catalog = JSON.parse(raw);
   if (!Array.isArray(catalog) || catalog.length > 20000)
     throw new Error("Invalid catalog");
-  const aliasesResponse = await fetch(
+  const aliasesResponse = await readSnapshot(
     CATALOG_URL.replace("catalog.json", "catalog-aliases.json"),
     { signal: AbortSignal.timeout(20000), redirect: "error" },
   );

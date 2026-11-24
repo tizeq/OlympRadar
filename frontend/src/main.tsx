@@ -417,7 +417,7 @@ function App() {
           }}
         >
           <span className="brand-icon">
-            s<span>↗</span>
+            o<span>↗</span>
           </span>
           OlympRadar<span className="brand-dot">.</span>
         </a>
@@ -596,7 +596,14 @@ function App() {
                 </div>
                 <select
                   aria-label="Сортировка"
-                  value={query.sort || "new"}
+                  disabled={["deadlines", "recommendations"].includes(view)}
+                  value={
+                    view === "deadlines"
+                      ? "deadline"
+                      : view === "recommendations"
+                        ? "score"
+                        : query.sort || "new"
+                  }
                   onChange={(e) => change("sort", e.target.value)}
                 >
                   <option value="new">Сначала новые</option>
@@ -770,6 +777,22 @@ function App() {
                 </div>
               ) : events.length ? (
                 <>
+                  {view === "deadlines" &&
+                    calendarDate &&
+                    !events.some((e) =>
+                      e.deadline?.startsWith(calendarDate),
+                    ) && (
+                      <div className="empty">
+                        <CalendarDays size={30} />
+                        <h3>В этот день нет дедлайнов</h3>
+                        <button
+                          className="text-link"
+                          onClick={() => setCalendarDate("")}
+                        >
+                          Показать весь месяц
+                        </button>
+                      </div>
+                    )}
                   <div className="card-grid">
                     {events
                       .filter(
