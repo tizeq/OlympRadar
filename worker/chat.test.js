@@ -30,6 +30,7 @@ function fixture(t) {
   const sent = [];
   t.mock.method(globalThis, "fetch", async (url, req) => {
     assert.ok(String(url).startsWith("https://api.telegram.org/bottest/"));
+    assert.equal(req.redirect, "manual");
     sent.push({
       method: String(url).split("/").pop(),
       ...JSON.parse(req.body),
@@ -89,8 +90,9 @@ function fixture(t) {
   return { db, d1, sent, invoke, events };
 }
 test("Private Telegram menu, all categories, pagination, details and search", async (t) => {
-  const { invoke, events } = fixture(t);
+  const { db, invoke, events } = fixture(t);
   events();
+  db.exec("UPDATE events SET prize='Неизвестно', restrictions=' неизвестно. '");
   const menu = await invoke("/start");
   assert.deepEqual(
     menu.reply_markup.inline_keyboard.flat().map((x) => x.text),
@@ -111,6 +113,7 @@ test("Private Telegram menu, all categories, pagination, details and search", as
     const detail = await invoke("", first.callback_data);
     assert.match(detail.text, /Начало мероприятия: 2028-04-01/);
     assert.match(detail.text, /Дедлайн: 2028-03-01/);
+    assert.doesNotMatch(detail.text, /неизвестно|Призы:|Ограничения:/i);
     assert.doesNotMatch(detail.text, /Регистрация до:/);
     assert.ok(
       detail.reply_markup.inline_keyboard

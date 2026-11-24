@@ -34,7 +34,7 @@ async function telegram(env, uid, text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(15000),
-      redirect: "error",
+      redirect: "manual",
     },
   );
   if (!response.ok) throw new Error("Telegram delivery failed");

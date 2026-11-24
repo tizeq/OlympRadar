@@ -174,7 +174,7 @@ export async function syncCatalog(env, readSnapshot = fetch) {
     return { skipped: true };
   const response = await readSnapshot(CATALOG_URL, {
     signal: AbortSignal.timeout(20000),
-    redirect: "error",
+    redirect: "manual",
     headers: { Accept: "application/json" },
   });
   if (!response.ok) throw new Error("Catalog fetch failed");
@@ -187,7 +187,7 @@ export async function syncCatalog(env, readSnapshot = fetch) {
     throw new Error("Invalid catalog");
   const aliasesResponse = await readSnapshot(
     CATALOG_URL.replace("catalog.json", "catalog-aliases.json"),
-    { signal: AbortSignal.timeout(20000), redirect: "error" },
+    { signal: AbortSignal.timeout(20000), redirect: "manual" },
   );
   let aliases = {};
   if (aliasesResponse.status === 404 && !prior?.last_sync) {
@@ -334,12 +334,12 @@ export default {
   async fetch(req, env) {
     const path = new URL(req.url).pathname;
     try {
-
       if (path === "/telegram") return await webhook(req, env);
       return json({ error: "Not found" }, 404);
     } catch (e) {
-      console.error("Request failed", e?.name);
-      return json({ error: "Invalid request" }, 400);
+      const frame = e?.stack?.split("\n").find((line) => /\bat (?:telegram|handleUpdate|webhook|screen|readBody)\b/.test(line));
+      console.error("Webhook processing failed", e?.name, frame?.trim() ?? "");
+      return json({ error: "Processing failed" }, 502);
     }
   },
   async scheduled(event, env, ctx) {

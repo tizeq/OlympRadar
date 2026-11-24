@@ -47,7 +47,8 @@ class SourceTests(unittest.TestCase):
     def test_calendar_dates_stay_in_month_and_ignore_news_sidebar(self):
         html = """<h2 class="calendar-title">Ноябрь 2026</h2>
           <div class="calendar-cell"><div class="calendar-cell__day">1</div>
-          <a class="calendar-event" href="/news/a/">Game</a></div>
+          <a class="calendar-event" href="/news/a/">Game</a>
+          <a class="calendar-event" href="/news/tools/">Ресурсы для CTF</a></div>
           <div class="calendar-cell"><div class="calendar-cell__day">2</div>
           <a class="calendar-event" href="/news/a/">Game</a></div>
           <a href="/news/b/">12.12.2026 Другая новость</a>"""

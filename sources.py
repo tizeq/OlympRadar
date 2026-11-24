@@ -384,7 +384,7 @@ def calendar_news(getter):
     page = CalendarListing()
     page.feed(getter(url))
     for (href, title), days in page.event_days.items():
-        if not re.fullmatch(r"/news/[^/?#]+/?", href):
+        if not re.fullmatch(r"/news/[^/?#]+/?", href) or href.rstrip("/") == "/news/tools":
             continue
         first, last = min(days), max(days)
         event = {"title": title, "url": urljoin(url, href), "source": "CTFNews"}

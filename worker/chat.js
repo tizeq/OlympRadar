@@ -47,7 +47,7 @@ async function telegram(env, method, data) {
     `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`,
     {
       method: "POST",
-      redirect: "error",
+      redirect: "manual",
       signal: AbortSignal.timeout(12000),
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -60,8 +60,16 @@ async function telegram(env, method, data) {
     result.description?.includes("message is not modified")
   )
     return;
-  if (!response.ok || !result.ok)
+  if (!response.ok || !result.ok) {
+    const reason = String(result.description ?? "").match(
+      /bot was blocked|chat not found|message thread not found|BUTTON_DATA_INVALID|bot can't initiate conversation/i,
+    )?.[0];
+    console.error("Telegram rejected request", method, response.status, result.error_code ?? 0, reason ?? "");
     throw new Error("Telegram " + method + " failed");
+  }
+  if (method === "sendMessage") {
+    console.info("Telegram message sent", result.result?.message_id);
+  }
 }
 const emptyState = () => ({ mode: "browse", query: {}, page: 0 });
 
@@ -145,6 +153,10 @@ async function results(db, uid, state) {
   );
 }
 function detail(e) {
+  const known = (value, limit) => {
+    const text = clean(value, limit);
+    return /^неизвестно[.!]?$/iu.test(text) ? "" : text;
+  };
   const fields = [
     ["Категория", CATEGORY_LABELS[e.category] || e.category],
     ["Регистрация с", e.registration_start],
@@ -181,10 +193,11 @@ function detail(e) {
   return panel(
     [
       clean(e.title, 220),
-      clean(e.description, 650),
+      known(e.description, 650),
       ...fields
-        .filter(([, v]) => v)
-        .map(([label, v]) => label + ": " + clean(v, 180)),
+        .map(([label, value]) => [label, known(value, 180)])
+        .filter(([, value]) => value)
+        .map(([label, value]) => label + ": " + value),
     ]
       .filter(Boolean)
       .join("\n"),
