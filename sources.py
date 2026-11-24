@@ -166,7 +166,7 @@ def enrich(event, getter=fetch, override=None, now=None):
         url = urljoin(event["url"], href)
         if not public_url(url) or urlsplit(url).hostname != official_host or not platform_official:
             continue
-        if re.fullmatch(r"(?:official )?rules|регламент|правила(?: участия)?", label.strip(), re.I):
+        if re.fullmatch(r"(?:official |view full )?rules|регламент|правила(?: участия)?", label.strip(), re.I):
             event.setdefault("rules_url", url)
         if re.fullmatch(r"register(?: now)?|join(?: hackathon)?|sign up|зарегистрироваться|регистрация", label.strip(), re.I):
             event.setdefault("registration_url", url)

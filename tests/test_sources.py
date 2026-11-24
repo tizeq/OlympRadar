@@ -111,8 +111,8 @@ class SourceTests(unittest.TestCase):
     def test_observed_aicrowd_status_and_title_links(self):
         # Minimal reconstruction of links seen on the official page 2026-11-24;
         # not a raw HTML capture (runtime DNS is unavailable).
-        html = '''<a href="/challenges/arc-white-box">Phase 2: Completed</a>
-        <h5><a href="/challenges/arc-white-box">ARC White-Box Estimation Challenge 2026</a></h5>
+        html = '''<a href="/challenges/arc-white-box-estimation-challenge-2026">Phase 2: Completed</a>
+        <h5><a href="/challenges/arc-white-box-estimation-challenge-2026">ARC White-Box Estimation Challenge 2026</a></h5>
         <a href="/challenges/open">Phase 1: Running</a>
         <h5><a href="/challenges/open">Open challenge</a></h5>'''
         predicate = lambda p: p.path.startswith('/challenges/')
@@ -129,6 +129,16 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(result[0]['deadline'], '2099-11-30')
         self.assertEqual(result[0]['format'], 'online')
         self.assertEqual(result[0]['url'], 'https://obscura.devpost.com/')
+
+    def test_observed_devpost_full_rules_and_registration_query(self):
+        event = {'title': 'OBSCURA', 'source': 'Devpost', 'url': 'https://obscura.devpost.com/'}
+        registration = '/register?flow%5Bdata%5D%5Bchallenge_id%5D=31775&flow%5Bname%5D=register_for_challenge'
+        page = '<a href="/rules">View full rules</a><a href="' + registration + '">Join hackathon</a>'
+        pages = {event['url']: page, 'https://obscura.devpost.com/rules': '<h1>Official participation rules</h1><p>Students only.</p>'}
+        result = sources.enrich(event, pages.__getitem__)
+        self.assertEqual(result['rules_url'], 'https://obscura.devpost.com/rules')
+        self.assertIn('flow%5Bdata%5D', result['registration_url'])
+        self.assertIn('Students only.', result['rules_text'])
 
 
 if __name__ == "__main__":
