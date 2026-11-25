@@ -486,7 +486,7 @@
     "registration_start": null,
     "registration_url": null,
     "restrictions": null,
-    "score": 50,
+    "score": 60,
     "source": "CTFNews",
     "start": "2026-11-07",
     "status": "ended",
@@ -494,7 +494,7 @@
       "ctf"
     ],
     "title": "NSK CTF School 2026",
-    "updated_at": "2026-11-24T20:26:30.483001+00:00",
+    "updated_at": "2026-11-25T12:58:23.861664+00:00",
     "url": "https://ctfnews.ru/news/otkryta-registratsiya-na-nsk-ctf-school-2026/"
   },
   {
@@ -1823,7 +1823,7 @@
     "deadline": null,
     "description": "Toronto, Ontario",
     "difficulty": null,
-    "end": "2027-01-31T23:59:59+00:00",
+    "end": "2027-01-31T19:00:00+00:00",
     "format": "onsite",
     "free": null,
     "id": "95701a9b98895506ce56a95d",
@@ -1837,13 +1837,13 @@
     "restrictions": null,
     "score": 10,
     "source": "MLH",
-    "start": "2027-01-29T01:11:11+00:00",
+    "start": "2027-01-29T20:30:00+00:00",
     "status": "active",
     "tags": [
       "hackathon"
     ],
     "title": "ElleHacks",
-    "updated_at": "2026-11-24T20:26:30.483001+00:00",
+    "updated_at": "2026-11-25T12:58:23.861664+00:00",
     "url": "https://www.mlh.com/events/ellehacks-39/prizes"
   },
   {
@@ -2374,7 +2374,7 @@
     "age_max": null,
     "age_min": null,
     "ai_policy": null,
-    "category": null,
+    "category": "ctf",
     "country": null,
     "created_at": "2026-11-24T19:58:55.972794+00:00",
     "deadline": null,
@@ -2392,13 +2392,15 @@
     "registration_start": null,
     "registration_url": null,
     "restrictions": null,
-    "score": 50,
+    "score": 85,
     "source": "CTFNews",
     "start": "2026-11-07",
     "status": "ended",
-    "tags": [],
+    "tags": [
+      "ctf"
+    ],
     "title": "XII OmCTF 2026: Киберкрепость",
-    "updated_at": "2026-11-24T20:26:30.483001+00:00",
+    "updated_at": "2026-11-25T12:58:23.861664+00:00",
     "url": "https://ctfnews.ru/news/omctf-2026/"
   },
   {
